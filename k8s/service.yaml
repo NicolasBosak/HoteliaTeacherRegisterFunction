@@ -5,7 +5,7 @@ metadata:
   labels:
     app: hotelia-teacher-function
 spec:
-  type: LoadBalancer # Uses Minikube's load balancer
+  type: NodePort
   selector:
     app: hotelia-teacher-function
   ports:
