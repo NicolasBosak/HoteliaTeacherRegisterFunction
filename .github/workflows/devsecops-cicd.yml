@@ -54,9 +54,13 @@ jobs:
       packages: write
       id-token: write # required for cosign keyless signing
     env:
-      IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/hotelia-teacher-function
       IMAGE_TAG: ${{ github.sha }}
     steps:
+      - name: Set lowercase image name
+        run: |
+          REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "IMAGE_NAME=ghcr.io/$REPO_OWNER/hotelia-teacher-function" >> $GITHUB_ENV
+
       - name: Checkout Repository
         uses: actions/checkout@v4
 
@@ -103,8 +107,10 @@ jobs:
 
       - name: Apply Kubernetes Manifests
         run: |
+          # Convertimos el owner a minúsculas
+          REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           # Reemplazamos la imagen con el tag actual
-          sed -i "s|image: hotelia-teacher-function:latest|image: ghcr.io/${{ github.repository_owner }}/hotelia-teacher-function:${{ github.sha }}|g" k8s/deployment.yaml
+          sed -i "s|image: hotelia-teacher-function:latest|image: ghcr.io/$REPO_OWNER/hotelia-teacher-function:${{ github.sha }}|g" k8s/deployment.yaml
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
 
