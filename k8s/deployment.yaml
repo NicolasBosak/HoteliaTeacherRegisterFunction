@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hotelia-teacher-function
+  labels:
+    app: hotelia-teacher-function
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hotelia-teacher-function
+  template:
+    metadata:
+      labels:
+        app: hotelia-teacher-function
+    spec:
+      containers:
+      - name: hotelia-teacher-function
+        image: hotelia-teacher-function:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80
+        env:
+        - name: AzureWebJobsStorage
+          value: "UseDevelopmentStorage=true"
+        - name: FUNCTIONS_WORKER_RUNTIME
+          value: "node"
+        # The variables PLAYFAB_TITLE_ID, PLAYFAB_SECRET_KEY, TEACHER_ACCESS_CODE 
+        # should be injected via Kubernetes Secrets in a real deployment
