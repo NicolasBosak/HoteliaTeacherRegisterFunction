@@ -98,6 +98,9 @@ jobs:
     name: Deploy to Local/Minikube (Simulation)
     needs: docker-build-and-scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
