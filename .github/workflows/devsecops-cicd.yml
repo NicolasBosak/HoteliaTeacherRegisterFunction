@@ -94,7 +94,7 @@ jobs:
       # blocks the job when the quality gate on new code is red. No separate
       # quality-gate action is needed: it would poll the same API twice.
       - name: SonarQube Scan & Quality Gate
-        uses: SonarSource/sonarqube-scan-action@v6
+        uses: SonarSource/sonarqube-scan-action@v8
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           # SonarCloud: https://sonarcloud.io — self-hosted: your server URL.
@@ -138,7 +138,7 @@ jobs:
           tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }},${{ env.IMAGE_NAME }}:latest
 
       - name: Trivy Report (informative, all severities)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: '${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
           format: 'table'
@@ -148,7 +148,7 @@ jobs:
           severity: 'CRITICAL,HIGH,MEDIUM'
 
       - name: Trivy Gate (fails on fixable CRITICAL)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: '${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
           format: 'table'
@@ -159,7 +159,7 @@ jobs:
 
       - name: Install Cosign
         if: github.event_name != 'pull_request'
-        uses: sigstore/cosign-installer@v3.7.0
+        uses: sigstore/cosign-installer@v4.1.2
 
       - name: Sign the published Docker image
         if: github.event_name != 'pull_request'
@@ -199,7 +199,7 @@ jobs:
       # Non-blocking by explicit decision: this scans an ephemeral env with no
       # real secrets. Findings are reported as artifacts/issues for triage.
       - name: Run OWASP ZAP Baseline Scan
-        uses: zaproxy/action-baseline@v0.14.0
+        uses: zaproxy/action-baseline@v0.15.0
         with:
           target: '${{ env.SERVICE_URL }}'
           fail_action: false
