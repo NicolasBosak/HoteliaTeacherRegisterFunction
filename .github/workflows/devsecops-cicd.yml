@@ -2,13 +2,21 @@ name: DevSecOps CI/CD Pipeline
 
 on:
   push:
-    branches: [ "master", "devsecops-cicd" ]
+    branches: [ "devsecops-cicd", "master", "main" ]
   pull_request:
-    branches: [ "master" ]
+    branches: [ "devsecops-cicd", "master", "main" ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
 
 jobs:
-  build-and-test:
-    name: Build & Test
+  lint-and-test:
+    name: Lint & Test (coverage gate)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
@@ -17,17 +25,28 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
 
       - name: Install Dependencies
-        run: npm install
+        run: npm ci
 
-      - name: Run Unit Tests
+      - name: Lint
+        run: npm run lint
+
+      - name: Run Unit Tests (fails under coverage threshold)
         run: npm test
+
+      - name: Upload Coverage Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14
 
   sast-analysis:
     name: SAST CodeQL Analysis
-    needs: build-and-test
     runs-on: ubuntu-latest
     permissions:
       security-events: write
@@ -45,9 +64,50 @@ jobs:
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
 
+  sonarqube:
+    name: SonarQube (quality, debt & coverage)
+    runs-on: ubuntu-latest
+    # Gated so the pipeline keeps working until SONAR_TOKEN is configured.
+    # Set the repo variable SONAR_CONFIGURED=true to switch it on.
+    if: vars.SONAR_CONFIGURED == 'true'
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          # Full history lets Sonar attribute issues to the right commit and
+          # compute the "new code" period the quality gate is measured against.
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run tests to produce coverage/lcov.info
+        run: npm test
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v4
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          # SonarCloud: https://sonarcloud.io — self-hosted: your server URL.
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL || 'https://sonarcloud.io' }}
+
+      # Fails the job if the Sonar quality gate is red (new code).
+      - name: SonarQube Quality Gate
+        uses: SonarSource/sonarqube-quality-gate-action@v1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL || 'https://sonarcloud.io' }}
+
   docker-build-and-scan:
     name: Build, Scan & Sign Container
-    needs: sast-analysis
+    needs: [lint-and-test]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -65,38 +125,55 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and Push Docker Image
+      # On pull requests the image is only built and scanned; it is pushed
+      # (and signed) exclusively on pushes to protected branches.
+      - name: Build Docker Image
         uses: docker/build-push-action@v5
         with:
           context: .
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ github.event_name == 'pull_request' }}
           tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }},${{ env.IMAGE_NAME }}:latest
 
-      - name: Run Trivy vulnerability scanner (DAST / Container Scan)
-        uses: aquasecurity/trivy-action@master
+      - name: Trivy Report (informative, all severities)
+        uses: aquasecurity/trivy-action@0.28.0
         with:
           image-ref: '${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
           format: 'table'
           exit-code: '0'
           ignore-unfixed: true
           vuln-type: 'os,library'
-          severity: 'CRITICAL,HIGH'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      - name: Trivy Gate (fails on fixable CRITICAL)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: '${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL'
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@v3.4.0
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@v3.7.0
 
       - name: Sign the published Docker image
+        if: github.event_name != 'pull_request'
         run: cosign sign --yes ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
 
-  deploy-to-minikube:
-    name: Deploy to Local/Minikube (Simulation)
-    needs: docker-build-and-scan
+  dast-zap:
+    name: DAST (ZAP) on ephemeral Minikube — non-blocking
+    needs: [docker-build-and-scan]
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -110,9 +187,7 @@ jobs:
 
       - name: Apply Kubernetes Manifests
         run: |
-          # Convertimos el owner a minúsculas
           REPO_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          # Reemplazamos la imagen con el tag actual
           sed -i "s|image: hotelia-teacher-function:latest|image: ghcr.io/$REPO_OWNER/hotelia-teacher-function:${{ github.sha }}|g" k8s/deployment.yaml
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
@@ -126,8 +201,91 @@ jobs:
           SERVICE_URL=$(minikube service hotelia-teacher-function-service --url | head -n 1)
           echo "SERVICE_URL=$SERVICE_URL" >> $GITHUB_ENV
 
-      - name: Run OWASP ZAP Baseline Scan (DAST against running container)
+      # Non-blocking by explicit decision: this scans an ephemeral env with no
+      # real secrets. Findings are reported as artifacts/issues for triage.
+      - name: Run OWASP ZAP Baseline Scan
         uses: zaproxy/action-baseline@v0.14.0
         with:
           target: '${{ env.SERVICE_URL }}'
-          fail_action: false # Se ajusta a false para no fallar el pipeline en pruebas académicas si detecta vulnerabilidades menores
+          fail_action: false
+          artifact_name: zap-baseline-report
+
+  deploy-to-azure:
+    name: Deploy to Azure Function App
+    needs: [lint-and-test, sast-analysis]
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      vars.AZURE_CONFIGURED == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: dev
+      url: https://${{ vars.AZURE_FUNCTIONAPP_NAME || 'func-hotelia-dev-teacher-api-sc' }}.azurewebsites.net
+    permissions:
+      contents: read
+      id-token: write # required for OIDC federated login (no stored credentials)
+    env:
+      FUNCTIONAPP_NAME: ${{ vars.AZURE_FUNCTIONAPP_NAME || 'func-hotelia-dev-teacher-api-sc' }}
+      RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP || 'rg-hotelia-dev' }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install production dependencies
+        run: npm ci --omit=dev
+
+      # Mode A (preferred): OIDC federated credentials. Requires an Entra app
+      # registration, which student accounts cannot create in this tenant —
+      # switch vars.AZURE_AUTH_MODE to 'oidc' once an admin provisions it.
+      - name: Azure Login (OIDC)
+        if: vars.AZURE_AUTH_MODE == 'oidc'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy to Function App (OIDC)
+        if: vars.AZURE_AUTH_MODE == 'oidc'
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ env.FUNCTIONAPP_NAME }}
+          package: '.'
+          respect-funcignore: true
+
+      # Mode B (default): publish profile scoped to this single Function App,
+      # stored as the AZURE_FUNCTIONAPP_PUBLISH_PROFILE secret.
+      - name: Deploy to Function App (publish profile)
+        if: vars.AZURE_AUTH_MODE != 'oidc'
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ env.FUNCTIONAPP_NAME }}
+          package: '.'
+          publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
+          respect-funcignore: true
+
+      # Without a function key the host answers 401 for an existing function
+      # (404 would mean the function did not load; 5xx a broken host).
+      - name: Smoke Test (functions host responds)
+        run: |
+          for i in $(seq 1 8); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              "https://$FUNCTIONAPP_NAME.azurewebsites.net/api/bulkCreateStudents" || true)
+
+            if [ "$STATUS" = "401" ] || [ "$STATUS" = "200" ]; then
+              echo "Smoke test OK (status $STATUS): host up and function routed."
+              exit 0
+            fi
+
+            echo "Attempt $i: status $STATUS — retrying in 15s..."
+            sleep 15
+          done
+
+          echo "Smoke test failed after retries."
+          exit 1

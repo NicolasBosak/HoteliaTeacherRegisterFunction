@@ -1,0 +1,143 @@
+name: Infrastructure CI/CD (Terraform)
+
+on:
+  push:
+    branches: [ "devsecops-cicd", "master", "main" ]
+    paths:
+      - "infra/**"
+      - ".github/workflows/infra-cicd.yml"
+  pull_request:
+    branches: [ "devsecops-cicd", "master", "main" ]
+    paths:
+      - "infra/**"
+      - ".github/workflows/infra-cicd.yml"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        type: choice
+        options: [ "dev", "prod" ]
+        default: "dev"
+      apply:
+        description: "Apply the plan (otherwise plan only)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: infra-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: "1.15.5"
+  TF_IN_AUTOMATION: "true"
+  TARGET_ENV: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'dev' }}
+
+defaults:
+  run:
+    working-directory: infra
+
+jobs:
+  validate:
+    name: Format & Validate (no credentials)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init (no backend)
+        run: terraform init -backend=false -input=false
+
+      - name: Terraform validate
+        run: terraform validate
+
+  plan-and-apply:
+    name: Plan & Apply (${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'dev' }})
+    needs: [validate]
+    if: vars.AZURE_CONFIGURED == 'true' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: infra-${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'dev' }}
+    permissions:
+      contents: read
+      id-token: write # OIDC for both the azurerm backend and provider
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform init (remote state)
+        run: terraform init -input=false -backend-config=envs/${{ env.TARGET_ENV }}.backend.hcl
+
+      - name: Terraform plan
+        run: terraform plan -input=false -var-file=envs/${{ env.TARGET_ENV }}.tfvars -out=tfplan
+
+      - name: Publish plan summary
+        run: |
+          {
+            echo '## Terraform plan (${{ env.TARGET_ENV }})'
+            echo '```'
+            terraform show -no-color tfplan | tail -n 200
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Applies automatically on pushes to the default branch; manual runs
+      # apply only when the "apply" input is checked. Protect the infra-*
+      # environments with required reviewers to add a human approval gate.
+      - name: Terraform apply
+        if: >-
+          (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) ||
+          (github.event_name == 'workflow_dispatch' && inputs.apply)
+        run: terraform apply -input=false -auto-approve tfplan
+
+  plan-on-pr:
+    name: Plan (read-only, PR)
+    needs: [validate]
+    if: vars.AZURE_CONFIGURED == 'true' && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform init (remote state)
+        run: terraform init -input=false -backend-config=envs/dev.backend.hcl
+
+      - name: Terraform plan
+        run: terraform plan -input=false -var-file=envs/dev.tfvars -out=tfplan
+
+      - name: Publish plan summary
+        run: |
+          {
+            echo '## Terraform plan (dev, PR preview)'
+            echo '```'
+            terraform show -no-color tfplan | tail -n 200
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
