@@ -98,9 +98,22 @@ El análisis se configura en [`sonar-project.properties`](sonar-project.properti
 1. Entra a [sonarcloud.io](https://sonarcloud.io) con la cuenta de GitHub y crea la organización enlazada al repo.
 2. Importa el repositorio `HoteliaTeacherRegisterFunction`. Anota el **Project Key** y el **Organization Key**.
 3. Si difieren de los valores por defecto, ajústalos en `sonar-project.properties` (`sonar.projectKey`, `sonar.organization`).
-4. En SonarCloud → *My Account → Security*, genera un token.
+4. En SonarCloud → *My Account → Security*, genera un **User Token**.
+   > ⚠️ Debe ser un **User Token**, no un *Project/Global Analysis Token*. Los tokens de análisis pueden subir el reporte pero **no leer el estado del quality gate**, lo que produce el error `Not authorized or project not found` justo después de un análisis exitoso.
 5. En GitHub → *Settings → Secrets and variables → Actions*: crea el secret `SONAR_TOKEN` con ese valor y la variable `SONAR_CONFIGURED=true`.
 6. En SonarCloud → *Administration → Analysis Method*: desactiva "Automatic Analysis" (el análisis lo hace el pipeline).
+7. En SonarCloud → *Administration → Branches and Pull Requests*: verifica que el nombre de la rama principal coincida con la rama por defecto del repositorio; si no, Sonar tratará los push como ramas de corta duración.
+
+**Verificar el token antes de correr el pipeline:**
+
+```bash
+# Debe responder con los datos del usuario y "valid": true
+curl -s -u "<TU_TOKEN>:" "https://sonarcloud.io/api/authentication/validate"
+
+# Debe devolver el estado del quality gate (si da 401/404, el token no tiene permiso Browse)
+curl -s -u "<TU_TOKEN>:" \
+  "https://sonarcloud.io/api/qualitygates/project_status?projectKey=NicolasBosak_HoteliaTeacherRegisterFunction"
+```
 
 Para **SonarQube self-hosted**: mismo procedimiento, pero define además la variable `SONAR_HOST_URL` con la URL del servidor. Mientras `SONAR_CONFIGURED` no sea `true`, el job se omite y el pipeline sigue funcionando.
 

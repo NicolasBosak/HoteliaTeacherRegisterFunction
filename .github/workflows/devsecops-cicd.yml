@@ -90,19 +90,14 @@ jobs:
       - name: Run tests to produce coverage/lcov.info
         run: npm test
 
-      - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@v4
+      # Scans and, because sonar-project.properties sets qualitygate.wait=true,
+      # blocks the job when the quality gate on new code is red. No separate
+      # quality-gate action is needed: it would poll the same API twice.
+      - name: SonarQube Scan & Quality Gate
+        uses: SonarSource/sonarqube-scan-action@v6
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           # SonarCloud: https://sonarcloud.io — self-hosted: your server URL.
-          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL || 'https://sonarcloud.io' }}
-
-      # Fails the job if the Sonar quality gate is red (new code).
-      - name: SonarQube Quality Gate
-        uses: SonarSource/sonarqube-quality-gate-action@v1
-        timeout-minutes: 5
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL || 'https://sonarcloud.io' }}
 
   docker-build-and-scan:
