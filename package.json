@@ -1,15 +1,21 @@
 {
   "name": "hoteliateacherregisterfunction",
   "version": "1.0.0",
-  "description": "",
+  "description": "Azure Functions backend for the Hotelia teacher panel, student management and NPC AI dialogue.",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "start": "func start",
-    "test": "jest"
+    "lint": "eslint .",
+    "test": "jest --ci"
   },
   "dependencies": {
     "@azure/functions": "4.16.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.5",
     "jest": "^29.0.0"
   },
   "main": "src/functions/*.js"
