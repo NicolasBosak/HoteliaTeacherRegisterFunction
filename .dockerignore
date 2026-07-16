@@ -1,0 +1,26 @@
+# Never bake secrets or local state into the image
+local.settings.json
+.env
+.env.*
+
+# Installed fresh inside the image via npm ci
+node_modules
+
+# Not needed at runtime
+.git
+.github
+.vscode
+tests
+coverage
+k8s
+infra
+Dockerfile
+.dockerignore
+eslint.config.mjs
+jest.config.js
+sonar-project.properties
+README.md
+*.log
+__blobstorage__
+__queuestorage__
+__azurite_db*__.json

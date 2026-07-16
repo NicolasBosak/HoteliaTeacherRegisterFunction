@@ -97,3 +97,13 @@ local.settings.json
 __blobstorage__
 __queuestorage__
 __azurite_db*__.json
+# Terraform
+infra/**/.terraform/
+infra/*.tfstate
+infra/*.tfstate.backup
+infra/crash.log
+
+# Local wiring file with function keys (never commit)
+unity-urls.local.md
+infra/tfplan
+publish-profile.local.xml
