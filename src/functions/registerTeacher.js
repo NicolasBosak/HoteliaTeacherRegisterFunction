@@ -2,7 +2,7 @@ const { app } = require('@azure/functions');
 
 app.http('registerTeacher', {
     methods: ['POST'],
-    authLevel: 'function',
+    authLevel: 'anonymous',
     route: 'registerTeacher',
     handler: async (request, context) => {
         try {
@@ -62,8 +62,6 @@ app.http('registerTeacher', {
             });
 
             const registerResult = await registerResponse.json();
-
-            context.log('RegisterPlayFabUser result:', JSON.stringify(registerResult));
 
             let playFabId = null;
 
@@ -130,7 +128,7 @@ app.http('registerTeacher', {
     }
 });
 
-async function loginExistingTeacherAccount(titleId, email, password, context) {
+async function loginExistingTeacherAccount(titleId, email, password, _context) {
     const loginUrl = `https://${titleId}.playfabapi.com/Client/LoginWithEmailAddress`;
 
     const loginResponse = await fetch(loginUrl, {
@@ -146,8 +144,6 @@ async function loginExistingTeacherAccount(titleId, email, password, context) {
     });
 
     const loginResult = await loginResponse.json();
-
-    context.log('LoginWithEmailAddress result:', JSON.stringify(loginResult));
 
     if (!loginResponse.ok || loginResult.error) {
         return {

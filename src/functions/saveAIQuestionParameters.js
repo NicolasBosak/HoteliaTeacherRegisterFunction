@@ -96,7 +96,7 @@ function upsertRegistryItem(classes, item) {
 
 app.http('saveAIQuestionParameters', {
     methods: ['POST'],
-    authLevel: 'function',
+    authLevel: 'anonymous',
     handler: async (request, context) => {
         try {
             const body = await request.json();

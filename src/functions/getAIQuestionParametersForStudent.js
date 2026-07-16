@@ -119,7 +119,7 @@ function isStudentAssignedToClass(assignedStudents, studentPlayFabId, classItem,
 
 app.http('getAIQuestionParametersForStudent', {
     methods: ['POST'],
-    authLevel: 'function',
+    authLevel: 'anonymous',
     handler: async (request, context) => {
         try {
             const body = await request.json();

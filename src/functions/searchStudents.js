@@ -1,89 +1,210 @@
 const { app } = require('@azure/functions');
 
-const StudentIndexKey = 'Hotelia_StudentIndex';
+const STUDENT_INDEX_KEY = 'Hotelia_StudentIndex';
+const ROLE_KEY = 'Role';
 
 app.http('searchStudents', {
     methods: ['POST'],
-    authLevel: 'function',
+    authLevel: 'anonymous',
     route: 'searchStudents',
     handler: async (request, context) => {
         try {
-            const body = await request.json().catch(() => ({}));
-            const query = (body.query || '').trim().toLowerCase();
+            const body = await readJsonBody(request);
 
-            const titleId = (process.env.PLAYFAB_TITLE_ID || '').trim();
-            const secretKey = (process.env.PLAYFAB_SECRET_KEY || '').trim();
+            const teacherSessionTicket = normalizeText(body.teacherSessionTicket);
+            const query = normalizeText(body.query).toLowerCase().slice(0, 100);
 
-            if (!titleId || !secretKey) {
-                return {
-                    status: 500,
-                    jsonBody: {
-                        success: false,
-                        message: 'Server configuration is missing.',
-                        students: []
-                    }
-                };
+            if (!teacherSessionTicket) {
+                return searchResponse(400, false, 'Missing teacher session ticket.', []);
             }
 
-            const indexData = await getInternalJson(titleId, secretKey, StudentIndexKey, { students: [] });
+            const titleId = getRequiredEnv('PLAYFAB_TITLE_ID');
+            const secretKey = getRequiredEnv('PLAYFAB_SECRET_KEY');
+
+            const teacherPlayFabId = await authenticateSessionTicket(
+                titleId,
+                secretKey,
+                teacherSessionTicket
+            );
+
+            if (!teacherPlayFabId) {
+                return searchResponse(401, false, 'Invalid or expired teacher session.', []);
+            }
+
+            const teacherRole = await getPlayerRole(
+                titleId,
+                secretKey,
+                teacherPlayFabId
+            );
+
+            if (teacherRole !== 'teacher') {
+                return searchResponse(403, false, 'Only teacher accounts can search students.', []);
+            }
+
+            const indexData = await getInternalJson(
+                titleId,
+                secretKey,
+                STUDENT_INDEX_KEY,
+                { students: [] }
+            );
 
             let students = Array.isArray(indexData.students)
                 ? indexData.students
                 : [];
 
-            if (query) {
-                students = students.filter(student => {
-                    const email = (student.email || '').toLowerCase();
-                    const displayName = (student.displayName || '').toLowerCase();
+            students = students.filter(student => {
+                if (!student) {
+                    return false;
+                }
 
-                    return email.includes(query) || displayName.includes(query);
-                });
-            }
+                const status = normalizeText(student.status || 'ACTIVE').toUpperCase();
+
+                if (status !== 'ACTIVE') {
+                    return false;
+                }
+
+                if (!query) {
+                    return true;
+                }
+
+                const email = normalizeText(student.email).toLowerCase();
+                const displayName = normalizeText(student.displayName).toLowerCase();
+
+                return email.includes(query) || displayName.includes(query);
+            });
 
             const results = students
-                .filter(student => (student.status || 'ACTIVE') === 'ACTIVE')
-                .slice(0, 100);
+                .slice(0, 100)
+                .map(student => ({
+                    playFabId: normalizeText(student.playFabId),
+                    displayName: normalizeText(student.displayName),
+                    email: normalizeText(student.email)
+                }))
+                .filter(student => student.playFabId);
 
-            return {
-                status: 200,
-                jsonBody: {
-                    success: true,
-                    message: query ? 'Students found.' : 'All students loaded.',
-                    students: results
-                }
-            };
+            return searchResponse(
+                200,
+                true,
+                query ? 'Students found.' : 'All students loaded.',
+                results
+            );
         } catch (error) {
             context.error(error);
-
-            return {
-                status: 500,
-                jsonBody: {
-                    success: false,
-                    message: 'Internal server error.',
-                    students: []
-                }
-            };
+            return searchResponse(500, false, 'Internal server error.', []);
         }
     }
 });
 
-async function getInternalJson(titleId, secretKey, key, defaultValue) {
-    const response = await fetch(`https://${titleId}.playfabapi.com/Admin/GetTitleInternalData`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-SecretKey': secretKey
+async function readJsonBody(request) {
+    try {
+        return await request.json();
+    } catch {
+        return {};
+    }
+}
+
+function searchResponse(status, success, message, students) {
+    return {
+        status,
+        jsonBody: {
+            success,
+            message,
+            students
+        }
+    };
+}
+
+function normalizeText(value) {
+    return typeof value === 'string' ? value.trim() : '';
+}
+
+function getRequiredEnv(name) {
+    const value = normalizeText(process.env[name]);
+
+    if (!value) {
+        throw new Error(`Missing environment variable: ${name}`);
+    }
+
+    return value;
+}
+
+async function authenticateSessionTicket(titleId, secretKey, sessionTicket) {
+    try {
+        const data = await playFabPost(
+            titleId,
+            'Server/AuthenticateSessionTicket',
+            { SessionTicket: sessionTicket },
+            secretKey
+        );
+
+        return data.UserInfo && data.UserInfo.PlayFabId
+            ? data.UserInfo.PlayFabId
+            : '';
+    } catch {
+        return '';
+    }
+}
+
+async function getPlayerRole(titleId, secretKey, playFabId) {
+    const data = await playFabPost(
+        titleId,
+        'Server/GetUserData',
+        {
+            PlayFabId: playFabId,
+            Keys: [ROLE_KEY]
         },
-        body: JSON.stringify({
-            Keys: [key]
-        })
-    });
+        secretKey
+    );
 
-    const result = await response.json();
+    return data.Data && data.Data[ROLE_KEY]
+        ? data.Data[ROLE_KEY].Value || ''
+        : '';
+}
 
-    if (!result.data || !result.data.Data || !result.data.Data[key]) {
+async function getInternalJson(titleId, secretKey, key, defaultValue) {
+    const data = await playFabPost(
+        titleId,
+        'Admin/GetTitleInternalData',
+        { Keys: [key] },
+        secretKey
+    );
+
+    if (!data.Data || !data.Data[key]) {
         return defaultValue;
     }
 
-    return JSON.parse(result.data.Data[key]);
+    try {
+        return JSON.parse(data.Data[key]);
+    } catch {
+        return defaultValue;
+    }
+}
+
+async function playFabPost(titleId, path, body, secretKey) {
+    const response = await fetch(
+        `https://${titleId}.playfabapi.com/${path}`,
+        {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-SecretKey': secretKey
+            },
+            body: JSON.stringify(body || {})
+        }
+    );
+
+    const text = await response.text();
+    let result;
+
+    try {
+        result = text ? JSON.parse(text) : {};
+    } catch {
+        throw new Error(`Invalid PlayFab response from ${path}.`);
+    }
+
+    if (!response.ok || result.error || result.code !== 200) {
+        throw new Error(result.errorMessage || `PlayFab request failed: ${path}`);
+    }
+
+    return result.data || {};
 }

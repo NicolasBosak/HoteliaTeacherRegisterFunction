@@ -8,7 +8,7 @@ const StudentIndexKey = 'Hotelia_StudentIndex';
 
 app.http('bulkCreateStudents', {
     methods: ['GET', 'POST'],
-    authLevel: 'function',
+    authLevel: 'anonymous',
     route: 'bulkCreateStudents',
     handler: async (request, context) => {
         if (request.method === 'GET') {
@@ -55,18 +55,17 @@ app.http('bulkCreateStudents', {
                 return errorResponse(401, 'Invalid teacher session.');
             }
 
-            const skipRoleCheck = process.env.SKIP_TEACHER_ROLE_CHECK === 'true';
+            const isTeacher = await validateTeacherRole(
+                titleId,
+                secretKey,
+                teacherInfo.playFabId
+            );
 
-            if (!skipRoleCheck) {
-                const isTeacher = await validateTeacherRole(
-                    titleId,
-                    secretKey,
-                    teacherInfo.playFabId
+            if (!isTeacher) {
+                return errorResponse(
+                    403,
+                    'Only teacher accounts can import students.'
                 );
-
-                if (!isTeacher) {
-                    return errorResponse(403, 'Only teacher accounts can import students.');
-                }
             }
 
             const uniqueStudents = removeDuplicatedEmails(students);
@@ -88,6 +87,18 @@ app.http('bulkCreateStudents', {
                         student,
                         context
                     );
+
+                    const existingRole = await getPlayerRole(
+                        titleId,
+                        secretKey,
+                        accountResult.playFabId
+                    );
+
+                    if (existingRole === 'teacher') {
+                        throw new Error(
+                            'This email belongs to a teacher account and cannot be imported as a student.'
+                        );
+                    }
 
                     if (accountResult.wasCreated) {
                         createdAccountCount++;
@@ -380,6 +391,26 @@ function getUserDataValue(userData, key) {
     return userData[key].Value || '';
 }
 
+async function getPlayerRole(titleId, secretKey, playFabId) {
+    const data = await playFabPost(
+        titleId,
+        '/Server/GetUserData',
+        {
+            PlayFabId: playFabId,
+            Keys: ['Role']
+        },
+        {
+            'X-SecretKey': secretKey
+        }
+    );
+
+    return data.Data &&
+           data.Data.Role &&
+           data.Data.Role.Value
+        ? data.Data.Role.Value
+        : '';
+}
+
 async function createOrGetStudentAccount(titleId, secretKey, student, context) {
     const existing = await getStudentByEmailSafe(titleId, secretKey, student.email);
 
@@ -580,7 +611,6 @@ async function saveStudentDataAndEnrollment(titleId, secretKey, playFabId, stude
         FirstName: student.firstName,
         LastName: student.lastName,
         Email: student.email,
-        Banner: student.banner,
         LastBulkImportUtc: new Date().toISOString()
     });
 
