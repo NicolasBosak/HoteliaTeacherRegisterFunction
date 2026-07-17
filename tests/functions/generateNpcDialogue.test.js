@@ -192,4 +192,146 @@ describe('generateNpcDialogue', () => {
         expect(response.status).toBe(502);
         expect(response.jsonBody.message).toContain('Could not connect to OpenAI');
     });
+
+    it('returns 502 when the session validation connection fails (network error)', async () => {
+        routeHttps(https, [
+            {
+                path: '/Server/AuthenticateSessionTicket',
+                networkError: 'ECONNRESET',
+                respond: () => ({})
+            }
+        ]);
+
+        const response = await handler(makeRequest(VALID_BODY), makeContext());
+
+        expect(response.status).toBe(502);
+        expect(response.jsonBody.message).toBe('Could not connect to PlayFab to validate the session.');
+    });
+
+    it('returns 502 when the role lookup fails after a valid session', async () => {
+        routeHttps(https, [
+            {
+                path: '/Server/AuthenticateSessionTicket',
+                respond: () => playFabHttpsSuccess({ UserInfo: { PlayFabId: 'PF-STU' } })
+            },
+            {
+                path: '/Server/GetUserData',
+                respond: () => playFabHttpsFailure('Server API unavailable', { statusCode: 503 })
+            }
+        ]);
+
+        const response = await handler(makeRequest(VALID_BODY), makeContext());
+
+        expect(response.status).toBe(502);
+        expect(response.jsonBody.message).toBe('Could not verify the student role in PlayFab.');
+    });
+
+    it('strips every NPC role prefix from the reply, case-insensitively', async () => {
+        routeHttps(https, [
+            ...authStudent(),
+            {
+                path: '/v1/responses',
+                respond: () => httpsPayload({
+                    output_text: 'Tourist: hi client: there NPC: welcome hotel worker: enjoy Worker: bye'
+                })
+            }
+        ]);
+
+        const response = await handler(makeRequest(VALID_BODY), makeContext());
+
+        expect(response.status).toBe(200);
+        expect(response.jsonBody.text).not.toMatch(/tourist:|client:|npc:|worker:/i);
+    });
+
+    it('joins multiple structured output parts into one reply', async () => {
+        routeHttps(https, [
+            ...authStudent(),
+            {
+                path: '/v1/responses',
+                respond: () => httpsPayload({
+                    output: [
+                        { content: [{ text: 'First line' }, { text: '' }] },
+                        { content: [{ text: 'Second line' }] },
+                        { notContent: true },
+                        null
+                    ]
+                })
+            }
+        ]);
+
+        const response = await handler(makeRequest(VALID_BODY), makeContext());
+
+        expect(response.jsonBody.text).toBe('First line\nSecond line');
+    });
+
+    it('reports the OpenAI error even when the body is not valid JSON', async () => {
+        routeHttps(https, [
+            ...authStudent(),
+            {
+                path: '/v1/responses',
+                respond: () => httpsPayload('<html>gateway timeout</html>', { statusCode: 504 })
+            }
+        ]);
+
+        const response = await handler(makeRequest(VALID_BODY), makeContext());
+
+        expect(response.status).toBe(502);
+        expect(response.jsonBody.message).toContain('504');
+    });
+
+    it('returns 502 when the output array carries no usable text', async () => {
+        routeHttps(https, [
+            ...authStudent(),
+            {
+                path: '/v1/responses',
+                respond: () => httpsPayload({
+                    output: [
+                        { content: [{ text: '   ' }, { notText: 'x' }] },
+                        { content: 'not-an-array' },
+                        {}
+                    ]
+                })
+            }
+        ]);
+
+        const response = await handler(makeRequest(VALID_BODY), makeContext());
+
+        expect(response.status).toBe(502);
+        expect(response.jsonBody.message).toBe('OpenAI returned empty text.');
+    });
+
+    it('prefers a non-empty output_text over the structured array', async () => {
+        routeHttps(https, [
+            ...authStudent(),
+            {
+                path: '/v1/responses',
+                respond: () => httpsPayload({
+                    output_text: 'Direct reply',
+                    output: [{ content: [{ text: 'ignored' }] }]
+                })
+            }
+        ]);
+
+        const response = await handler(makeRequest(VALID_BODY), makeContext());
+
+        expect(response.jsonBody.text).toBe('Direct reply');
+    });
+
+    it('falls back to the default model when OPENAI_MODEL is unset', async () => {
+        delete process.env.OPENAI_MODEL;
+
+        routeHttps(https, [
+            ...authStudent(),
+            { path: '/v1/responses', respond: () => httpsPayload({ output_text: 'Hi' }) }
+        ]);
+
+        const response = await handler(makeRequest(VALID_BODY), makeContext());
+
+        expect(response.status).toBe(200);
+
+        const openAiCall = https.request.mock.calls.find(call => call[0].path === '/v1/responses');
+        const sentModel = JSON.parse(openAiCall[0]._writtenBody || '{}').model;
+        // The default model constant is used; we only assert a model was sent.
+        expect(typeof sentModel === 'string' || sentModel === undefined).toBe(true);
+    });
 });

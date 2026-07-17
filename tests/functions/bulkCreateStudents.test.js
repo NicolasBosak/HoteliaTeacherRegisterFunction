@@ -9,6 +9,7 @@ const {
     makeRequest,
     makeContext,
     playFabHttpsSuccess,
+    playFabHttpsFailure,
     routeHttps,
     getRegistration
 } = require('../helpers/testUtils');
@@ -615,5 +616,170 @@ describe('bulkCreateStudents', () => {
         expect(body.success).toBe(true);
         expect(body.createdCount).toBe(1);
         expect(body.errorCount).toBe(0);
+    });
+
+    it('reuses the account when registration fails because the email exists', async () => {
+        // First lookup finds nothing → registration is attempted → it fails
+        // with "email exists" → the second lookup then returns the account.
+        let lookupCount = 0;
+
+        routeHttps(https, [
+            authTeacher(),
+            teacherRole('teacher'),
+            {
+                path: '/Admin/GetUserAccountInfo',
+                respond: () => {
+                    lookupCount += 1;
+                    return lookupCount === 1
+                        ? playFabHttpsSuccess({})
+                        : playFabHttpsSuccess({ UserInfo: { PlayFabId: 'S1' } });
+                }
+            },
+            {
+                path: '/Client/RegisterPlayFabUser',
+                respond: () => playFabHttpsFailure('Email address not available', { statusCode: 400 })
+            },
+            studentRole('S1', 'student'),
+            ...persistenceRoutes({ playFabId: 'S1' })
+        ]);
+
+        const response = await handler(makeRequest(VALID_BODY), makeContext());
+        const body = parseBody(response);
+
+        expect(response.status).toBe(200);
+        expect(body.reusedAccountCount).toBe(1);
+        expect(body.createdAccountCount).toBe(0);
+        expect(body.errorCount).toBe(0);
+    });
+
+    it('falls back to the Server lookup when the Admin lookup fails', async () => {
+        routeHttps(https, [
+            authTeacher(),
+            teacherRole('teacher'),
+            {
+                path: '/Admin/GetUserAccountInfo',
+                respond: () => playFabHttpsFailure('Admin API not allowed', { statusCode: 403 })
+            },
+            {
+                path: '/Server/GetUserAccountInfo',
+                respond: () => playFabHttpsSuccess({ UserInfo: { PlayFabId: 'S1' } })
+            },
+            studentRole('S1', 'student'),
+            ...persistenceRoutes({ playFabId: 'S1' })
+        ]);
+
+        const response = await handler(makeRequest(VALID_BODY), makeContext());
+        const body = parseBody(response);
+
+        expect(response.status).toBe(200);
+        expect(body.reusedAccountCount).toBe(1);
+    });
+
+    it('records an error when an imported email belongs to a teacher account', async () => {
+        routeHttps(https, [
+            authTeacher(),
+            teacherRole('teacher'),
+            existingStudentAccount('S1'),
+            studentRole('S1', 'teacher'), // the reused account is actually a teacher
+            ...persistenceRoutes({ playFabId: 'S1' })
+        ]);
+
+        const response = await handler(makeRequest(VALID_BODY), makeContext());
+        const body = parseBody(response);
+
+        expect(response.status).toBe(200);
+        expect(body.errorCount).toBe(1);
+        expect(body.errors[0]).toContain('teacher account');
+    });
+
+    it('propagates a non-email registration error as a per-student error', async () => {
+        routeHttps(https, [
+            authTeacher(),
+            teacherRole('teacher'),
+            missingStudentAccount(),
+            {
+                path: '/Client/RegisterPlayFabUser',
+                respond: () => playFabHttpsFailure('Password does not meet complexity', { statusCode: 400 })
+            }
+        ]);
+
+        const response = await handler(makeRequest(VALID_BODY), makeContext());
+        const body = parseBody(response);
+
+        expect(response.status).toBe(200);
+        expect(body.errorCount).toBe(1);
+        expect(body.errors[0]).toContain('complexity');
+    });
+
+    it('creates an account with a fallback username for very short names', async () => {
+        routeHttps(https, [
+            authTeacher(),
+            teacherRole('teacher'),
+            missingStudentAccount(),
+            registerStudent('S3'),
+            studentRole('S3', 'student'),
+            ...persistenceRoutes({ playFabId: 'S3' })
+        ]);
+
+        const shortNameStudent = {
+            firstName: 'A',
+            lastName: 'B',
+            email: 'ab@test.com',
+            banner: 'A123456',
+            ncr: '1234'
+        };
+
+        const response = await handler(
+            makeRequest({ ...VALID_BODY, students: [shortNameStudent] }),
+            makeContext()
+        );
+
+        expect(response.status).toBe(200);
+        expect(parseBody(response).createdAccountCount).toBe(1);
+    });
+
+    it('keeps rows without an email during de-duplication', async () => {
+        routeHttps(https, [authTeacher(), teacherRole('teacher')]);
+
+        // Two rows without an email must both survive de-duplication and then
+        // both fail validation (invalid email), proving they were not merged.
+        const noEmail = { firstName: 'A', lastName: 'B', email: '', banner: 'A123456', ncr: '1234' };
+
+        const response = await handler(
+            makeRequest({ ...VALID_BODY, students: [noEmail, { ...noEmail }] }),
+            makeContext()
+        );
+
+        expect(parseBody(response).errorCount).toBe(2);
+    });
+
+    it('degrades to context.log when warn/error methods are unavailable', async () => {
+        // A context exposing only log() exercises the safeWarn/safeError
+        // fallback branches without throwing.
+        const logOnlyContext = { log: jest.fn() };
+
+        routeHttps(https, [authTeacher(), teacherRole('teacher')]);
+
+        const response = await handler(
+            makeRequest({
+                ...VALID_BODY,
+                students: [{ ...VALID_BODY.students[0], email: 'not-an-email' }]
+            }),
+            logOnlyContext
+        );
+
+        expect(response.status).toBe(200);
+        expect(parseBody(response).errorCount).toBe(1);
+        expect(logOnlyContext.log).toHaveBeenCalled();
+    });
+
+    it('surfaces a fatal error through context.log when error() is unavailable', async () => {
+        const logOnlyContext = { log: jest.fn() };
+        delete process.env.PLAYFAB_TITLE_ID;
+
+        const response = await handler(makeRequest(VALID_BODY), logOnlyContext);
+
+        expect(response.status).toBe(500);
+        expect(logOnlyContext.log).toHaveBeenCalled();
     });
 });
