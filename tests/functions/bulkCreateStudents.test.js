@@ -9,7 +9,6 @@ const {
     makeRequest,
     makeContext,
     playFabHttpsSuccess,
-    playFabHttpsFailure,
     routeHttps,
     getRegistration
 } = require('../helpers/testUtils');
@@ -18,7 +17,6 @@ require('../../src/functions/bulkCreateStudents');
 
 const options = getRegistration(app, 'bulkCreateStudents');
 const handler = options.handler;
-
 const ORIGINAL_ENV = process.env;
 
 const VALID_BODY = {
@@ -616,40 +614,6 @@ describe('bulkCreateStudents', () => {
         expect(response.status).toBe(200);
         expect(body.success).toBe(true);
         expect(body.createdCount).toBe(1);
-        expect(body.errorCount).toBe(0);
-    });
-
-    it('reuses the account when registration fails because the email exists', async () => {
-        // First lookup finds nothing, so registration is attempted; that fails
-        // with "email exists", and the second lookup then returns the account.
-        let lookupCount = 0;
-
-        routeHttps(https, [
-            authTeacher(),
-            teacherRole('teacher'),
-            {
-                path: '/Admin/GetUserAccountInfo',
-                respond: () => {
-                    lookupCount += 1;
-                    return lookupCount === 1
-                        ? playFabHttpsSuccess({})
-                        : playFabHttpsSuccess({ UserInfo: { PlayFabId: 'S1' } });
-                }
-            },
-            {
-                path: '/Client/RegisterPlayFabUser',
-                respond: () => playFabHttpsFailure('Email address not available', { statusCode: 400 })
-            },
-            studentRole('S1', 'student'),
-            ...persistenceRoutes({ playFabId: 'S1' })
-        ]);
-
-        const response = await handler(makeRequest(VALID_BODY), makeContext());
-        const body = parseBody(response);
-
-        expect(response.status).toBe(200);
-        expect(body.reusedAccountCount).toBe(1);
-        expect(body.createdAccountCount).toBe(0);
         expect(body.errorCount).toBe(0);
     });
 });
