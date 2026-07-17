@@ -274,4 +274,123 @@ describe('getAIQuestionParametersForStudent', () => {
         expect(response.status).toBe(500);
         expect(response.jsonBody.success).toBe(false);
     });
+
+    // ── Full flow: registry hit → assignment check → parameters ──────────
+
+    const REGISTRY = {
+        classes: [
+            { classCode: 'NRC1234', teacherPlayFabId: 'T1', courseId: 'course-1', status: 'ACTIVE' }
+        ]
+    };
+
+    function registryHit() {
+        return {
+            path: 'GetTitleInternalData',
+            respond: () => playFabSuccess({
+                Data: { Hotelia_ClassAIRegistry: JSON.stringify(REGISTRY) }
+            })
+        };
+    }
+
+    function teacherStudents(students) {
+        return {
+            path: 'GetUserData',
+            when: body => Array.isArray(body.Keys) && body.Keys.includes('Hotelia_TeacherStudents'),
+            respond: () => playFabSuccess({
+                Data: { Hotelia_TeacherStudents: { Value: JSON.stringify({ students }) } }
+            })
+        };
+    }
+
+    function teacherParams(parameters) {
+        return {
+            path: 'GetUserData',
+            when: body => Array.isArray(body.Keys) && body.Keys.includes('Hotelia_AIQuestionParameters'),
+            respond: () => playFabSuccess({
+                Data: { Hotelia_AIQuestionParameters: { Value: JSON.stringify({ parameters }) } }
+            })
+        };
+    }
+
+    it('denies a student that is not assigned to the class', async () => {
+        routeFetch([
+            authAs('S1'),
+            roleIs('student'),
+            registryHit(),
+            teacherStudents([{ studentPlayFabId: 'S-OTHER', courseId: 'course-1', status: 'ACTIVE' }])
+        ]);
+
+        const response = await getHandler(
+            makeRequest({ sessionTicket: 'ticket-1', classCode: 'NRC1234' }),
+            makeContext()
+        );
+
+        expect(response.status).toBe(403);
+        expect(response.jsonBody.message).toBe('This student is not assigned to this class.');
+    });
+
+    it('returns 404 when the class has no matching AI parameters', async () => {
+        routeFetch([
+            authAs('S1'),
+            roleIs('student'),
+            registryHit(),
+            teacherStudents([{ studentPlayFabId: 'S1', courseId: 'course-1', status: 'ACTIVE' }]),
+            teacherParams([{ courseId: 'other-course', status: 'ACTIVE' }])
+        ]);
+
+        const response = await getHandler(
+            makeRequest({ sessionTicket: 'ticket-1', classCode: 'NRC1234' }),
+            makeContext()
+        );
+
+        expect(response.status).toBe(404);
+        expect(response.jsonBody.message).toBe('AI parameters were not found in teacher data.');
+    });
+
+    it('returns the parameters for an assigned student (happy path)', async () => {
+        const parameter = {
+            courseId: 'course-1',
+            classCode: 'NRC1234',
+            scenarioParameters: 'Hotel check-in',
+            status: 'ACTIVE'
+        };
+
+        routeFetch([
+            authAs('S1'),
+            roleIs('student'),
+            registryHit(),
+            teacherStudents([{ studentPlayFabId: 'S1', courseId: 'course-1', status: 'ACTIVE' }]),
+            teacherParams([parameter])
+        ]);
+
+        const response = await getHandler(
+            makeRequest({ sessionTicket: 'ticket-1', classCode: 'NRC1234' }),
+            makeContext()
+        );
+
+        expect(response.status).toBe(200);
+        expect(response.jsonBody.success).toBe(true);
+        expect(response.jsonBody.parameters).toMatchObject({ courseId: 'course-1', classCode: 'NRC1234' });
+    });
+
+    it('matches a student assigned by classCode/ncr instead of courseId', async () => {
+        const parameter = { courseId: 'course-1', status: 'ACTIVE' };
+
+        routeFetch([
+            authAs('S1'),
+            roleIs('student'),
+            registryHit(),
+            // No courseId on the enrollment, only the ncr — exercises the
+            // alternate matching branch in isStudentAssignedToClass.
+            teacherStudents([{ playFabId: 'S1', ncr: 'NRC1234', status: 'ACTIVE' }]),
+            teacherParams([parameter])
+        ]);
+
+        const response = await getHandler(
+            makeRequest({ sessionTicket: 'ticket-1', classCode: 'NRC1234' }),
+            makeContext()
+        );
+
+        expect(response.status).toBe(200);
+    });
 });

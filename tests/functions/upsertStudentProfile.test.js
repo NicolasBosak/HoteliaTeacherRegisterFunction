@@ -170,4 +170,83 @@ describe('upsertStudentProfile', () => {
         expect(response.status).toBe(500);
         expect(response.jsonBody.success).toBe(false);
     });
+
+    it('repairs a roleless account to student and then saves it', async () => {
+        routeFetch([
+            authAs('PF1'),
+            role(null), // no Role stored → triggers the self-repair branch
+            { path: '/Server/UpdateUserData', respond: () => playFabSuccess({}) },
+            accountInfo('ana@test.com', 'Ana Torres'),
+            { path: '/Admin/GetTitleInternalData', respond: () => playFabSuccess({ Data: {} }) },
+            { path: '/Admin/SetTitleInternalData', respond: () => playFabSuccess({}) }
+        ]);
+
+        const response = await handler(makeRequest(VALID_BODY), makeContext());
+
+        expect(response.status).toBe(200);
+        expect(response.jsonBody.success).toBe(true);
+
+        const roleWrite = global.fetch.mock.calls.find(call =>
+            call[0].includes('/Server/UpdateUserData') &&
+            JSON.parse(call[1].body).Data &&
+            JSON.parse(call[1].body).Data.Role === 'student'
+        );
+        expect(roleWrite).toBeDefined();
+    });
+
+    it('rejects an account with an unknown role', async () => {
+        routeFetch([authAs('PF1'), role('admin')]);
+
+        const response = await handler(makeRequest(VALID_BODY), makeContext());
+
+        expect(response.status).toBe(403);
+        expect(response.jsonBody.message).toBe('Only student accounts can be added to the student index.');
+    });
+
+    it('returns 400 when the account has no email address', async () => {
+        routeFetch([
+            authAs('PF1'),
+            role('student'),
+            {
+                path: 'GetUserAccountInfo',
+                respond: () => playFabSuccess({
+                    UserInfo: { PlayFabId: 'PF1', PrivateInfo: {}, TitleInfo: {} }
+                })
+            }
+        ]);
+
+        const response = await handler(makeRequest(VALID_BODY), makeContext());
+
+        expect(response.status).toBe(400);
+        expect(response.jsonBody.message).toBe('The authenticated PlayFab account does not have an email address.');
+    });
+
+    it('updates an existing student entry instead of duplicating it', async () => {
+        routeFetch([
+            authAs('PF1'),
+            role('student'),
+            accountInfo('ana@test.com', 'Ana Torres'),
+            {
+                path: '/Admin/GetTitleInternalData',
+                respond: () => playFabSuccess({
+                    Data: {
+                        Hotelia_StudentIndex: JSON.stringify({
+                            students: [{ playFabId: 'PF1', email: 'old@test.com', displayName: 'Old', status: 'ACTIVE' }]
+                        })
+                    }
+                })
+            },
+            { path: '/Admin/SetTitleInternalData', respond: () => playFabSuccess({}) }
+        ]);
+
+        const response = await handler(makeRequest(VALID_BODY), makeContext());
+
+        expect(response.status).toBe(200);
+
+        const setCall = global.fetch.mock.calls.find(call => call[0].includes('/Admin/SetTitleInternalData'));
+        const saved = JSON.parse(JSON.parse(setCall[1].body).Value);
+
+        expect(saved.students).toHaveLength(1);
+        expect(saved.students[0].email).toBe('ana@test.com');
+    });
 });
