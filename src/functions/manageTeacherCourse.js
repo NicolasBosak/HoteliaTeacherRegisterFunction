@@ -13,6 +13,7 @@ const {
 } = require('../lib/playfabClient');
 
 const TEACHER_COURSES_KEY = 'Hotelia_TeacherCourses';
+const TEACHER_STUDENTS_KEY = 'Hotelia_TeacherStudents';
 const COURSE_REGISTRY_KEY = 'Hotelia_CourseRegistry';
 const SUBJECT_CATALOG_KEY = 'Hotelia_SubjectCatalog';
 
@@ -530,6 +531,34 @@ async function deleteTeacherCourse(
     const classCode =
         getCourseClassCode(course);
 
+    /*
+     * No se permite eliminar un curso mientras tenga
+     * estudiantes activos asignados.
+     */
+    const assignedStudents =
+        await getAssignedStudents(
+            titleId,
+            secretKey,
+            teacherPlayFabId
+        );
+
+    const assignedStudentCount =
+        countActiveStudentsAssignedToCourse(
+            assignedStudents,
+            courseId,
+            classCode
+        );
+
+    if (assignedStudentCount > 0) {
+        return jsonResponse(409, {
+            success: false,
+            message:
+                'This course cannot be deleted because it has ' +
+                assignedStudentCount +
+                ' assigned student(s). Reassign or remove them first.'
+        });
+    }
+
     const registry = await getCourseRegistry(
         titleId,
         secretKey
@@ -699,6 +728,113 @@ async function getTeacherCourses(
             courses: []
         };
     }
+}
+
+async function getAssignedStudents(
+    titleId,
+    secretKey,
+    teacherPlayFabId
+) {
+    const data = await playFabPost(
+        titleId,
+        'Server/GetUserData',
+        {
+            PlayFabId: teacherPlayFabId,
+            Keys: [TEACHER_STUDENTS_KEY]
+        },
+        secretKey
+    );
+
+    const raw =
+        data &&
+            data.Data &&
+            data.Data[TEACHER_STUDENTS_KEY]
+            ? data.Data[TEACHER_STUDENTS_KEY].Value
+            : '';
+
+    if (!raw) {
+        return [];
+    }
+
+    let parsed;
+
+    try {
+        parsed = JSON.parse(raw);
+    } catch {
+        throw publicError(
+            500,
+            'Assigned student data is invalid. The course was not deleted.'
+        );
+    }
+
+    if (Array.isArray(parsed.students)) {
+        return parsed.students;
+    }
+
+    /*
+     * Compatibilidad con registros antiguos.
+     */
+    if (Array.isArray(parsed.assignedStudents)) {
+        return parsed.assignedStudents;
+    }
+
+    return [];
+}
+
+function countActiveStudentsAssignedToCourse(
+    assignedStudents,
+    courseId,
+    classCode
+) {
+    if (!Array.isArray(assignedStudents)) {
+        return 0;
+    }
+
+    let count = 0;
+
+    for (const student of assignedStudents) {
+        if (!student) {
+            continue;
+        }
+
+        const status = normalizeText(
+            student.status || 'ACTIVE'
+        ).toUpperCase();
+
+        if (status !== 'ACTIVE') {
+            continue;
+        }
+
+        const savedCourseId =
+            normalizeText(student.courseId);
+
+        const savedClassCode =
+            normalizeText(
+                student.courseCode ||
+                student.classCode ||
+                student.ncr ||
+                student.nrc
+            );
+
+        const sameCourseId =
+            savedCourseId &&
+            savedCourseId === courseId;
+
+        /*
+         * Compatibilidad con asignaciones antiguas que
+         * no guardaban courseId y solo tenían el NCR.
+         */
+        const sameClassCode =
+            !savedCourseId &&
+            savedClassCode &&
+            savedClassCode === classCode;
+
+        if (sameCourseId || sameClassCode) {
+            count++;
+        }
+    }
+
+    return count;
 }
 
 async function saveTeacherCourses(

@@ -269,7 +269,7 @@ function normalizeStudentRow(row) {
     const firstName = (row.firstName || '').trim();
     const lastName = (row.lastName || '').trim();
     const email = (row.email || '').trim().toLowerCase();
-    const banner = (row.banner || '').trim();
+    const banner = (row.banner || '').trim().toUpperCase();
     const ncr = (row.ncr || '').trim();
 
     return {
@@ -291,20 +291,22 @@ function validateStudentRow(student) {
         throw new Error('Missing last name.');
     }
 
-    if (!student.email || !student.email.includes('@')) {
-        throw new Error('Invalid email.');
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+    if (!student.email || !emailRegex.test(student.email)) {
+        throw new Error('Invalid email address.');
     }
 
-    if (!student.banner) {
-        throw new Error('Missing banner number.');
+    if (!student.banner || !/^A\d{8}$/.test(student.banner)) {
+        throw new Error(
+            'Invalid Banner ID. It must contain the letter A followed by exactly 8 numbers. Example: A00123456.'
+        );
     }
 
-    if (student.banner.length < 6) {
-        throw new Error('Banner/password must have at least 6 characters.');
-    }
-
-    if (!student.ncr || student.ncr.length !== 4 || !/^\d+$/.test(student.ncr)) {
-        throw new Error('Invalid NCR. NCR must have exactly 4 numbers.');
+    if (!student.ncr || !/^\d{4}$/.test(student.ncr)) {
+        throw new Error(
+            'Invalid NCR. NCR must contain exactly 4 numbers.'
+        );
     }
 }
 

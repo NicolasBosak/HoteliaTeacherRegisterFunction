@@ -80,6 +80,30 @@ function teacherCourses(courses) {
     };
 }
 
+// Students assigned to the teacher, read during delete to block removing a
+// course that still has active enrolments. `null` means "key not stored".
+function assignedStudents(students, { key = 'students', rawValue = null } = {}) {
+    return {
+        path: 'Server/GetUserData',
+        when: body => Array.isArray(body.Keys) && body.Keys.includes('Hotelia_TeacherStudents'),
+        respond: () => playFabSuccess({
+            Data: students === null && rawValue === null
+                ? {}
+                : {
+                    Hotelia_TeacherStudents: {
+                        Value: rawValue !== null
+                            ? rawValue
+                            : JSON.stringify({ [key]: students })
+                    }
+                }
+        })
+    };
+}
+
+function noAssignedStudents() {
+    return assignedStudents(null);
+}
+
 // Admin/GetTitleInternalData returns plain strings.
 function courseRegistry(coursesByNcr) {
     return {
@@ -351,6 +375,7 @@ describe('manageTeacherCourse', () => {
             role('teacher'),
             subjectCatalog([activeSubject()]),
             teacherCourses([]),
+            noAssignedStudents(),
             courseRegistry({}),
             saveRegistryOk(),
             saveCoursesOk()
@@ -455,6 +480,7 @@ describe('manageTeacherCourse', () => {
             role('teacher'),
             subjectCatalog([activeSubject()]),
             teacherCourses([existingCourse()]),
+            noAssignedStudents(),
             courseRegistry({
                 1234: { courseId: 'course_1', teacherPlayFabId: TEACHER_ID, createdAtUtc: '2026-01-01T00:00:00.000Z' }
             }),
@@ -517,6 +543,7 @@ describe('manageTeacherCourse', () => {
             role('teacher'),
             subjectCatalog([activeSubject()]),
             teacherCourses([existingCourse({ courseId: 'course_9', classCode: '1234' })]),
+            noAssignedStudents(),
             courseRegistry({})
         ]);
 
@@ -532,6 +559,7 @@ describe('manageTeacherCourse', () => {
             role('teacher'),
             subjectCatalog([activeSubject()]),
             teacherCourses([]),
+            noAssignedStudents(),
             courseRegistry({
                 1234: { courseId: 'course_x', teacherPlayFabId: 'T-OTHER' }
             })
@@ -551,6 +579,7 @@ describe('manageTeacherCourse', () => {
             role('teacher'),
             subjectCatalog([activeSubject()]),
             teacherCourses([]),
+            noAssignedStudents(),
             courseRegistry({
                 1234: { courseId: 'course_previous', teacherPlayFabId: TEACHER_ID }
             })
@@ -568,6 +597,7 @@ describe('manageTeacherCourse', () => {
             role('teacher'),
             subjectCatalog([activeSubject()]),
             teacherCourses([existingCourse({ classCode: '1111', courseCode: '1111' })]),
+            noAssignedStudents(),
             courseRegistry({
                 1111: { courseId: 'course_1', teacherPlayFabId: TEACHER_ID }
             }),
@@ -593,6 +623,7 @@ describe('manageTeacherCourse', () => {
             role('teacher'),
             subjectCatalog([activeSubject()]),
             teacherCourses([existingCourse({ classCode: '1111', courseCode: '1111' })]),
+            noAssignedStudents(),
             courseRegistry({
                 1111: { courseId: 'course_someone_else', teacherPlayFabId: 'T-OTHER' }
             }),
@@ -619,6 +650,7 @@ describe('manageTeacherCourse', () => {
             role('teacher'),
             subjectCatalog([activeSubject()]),
             teacherCourses([]),
+            noAssignedStudents(),
             courseRegistry(originalRegistry),
             saveRegistryOk(),
             {
@@ -650,6 +682,7 @@ describe('manageTeacherCourse', () => {
             role('teacher'),
             subjectCatalog([activeSubject()]),
             teacherCourses([]),
+            noAssignedStudents(),
             courseRegistry({}),
             {
                 path: 'Admin/SetTitleInternalData',
@@ -714,6 +747,7 @@ describe('manageTeacherCourse', () => {
             authTeacher(),
             role('teacher'),
             teacherCourses([existingCourse(), existingCourse({ courseId: 'course_2', classCode: '5678' })]),
+            noAssignedStudents(),
             courseRegistry({
                 1234: { courseId: 'course_1', teacherPlayFabId: TEACHER_ID },
                 5678: { courseId: 'course_2', teacherPlayFabId: TEACHER_ID }
@@ -744,6 +778,7 @@ describe('manageTeacherCourse', () => {
             authTeacher(),
             role('teacher'),
             teacherCourses([existingCourse()]),
+            noAssignedStudents(),
             courseRegistry({
                 1234: { courseId: 'course_1', teacherPlayFabId: 'T-OTHER' }
             }),
@@ -765,6 +800,7 @@ describe('manageTeacherCourse', () => {
             authTeacher(),
             role('teacher'),
             teacherCourses([existingCourse()]),
+            noAssignedStudents(),
             courseRegistry({
                 1234: { courseId: 'course_1', teacherPlayFabId: TEACHER_ID }
             }),
@@ -798,6 +834,7 @@ describe('manageTeacherCourse', () => {
             authTeacher(),
             role('teacher'),
             teacherCourses([{ courseId: 'course_1', courseCode: '4321', teacherPlayFabId: TEACHER_ID }]),
+            noAssignedStudents(),
             courseRegistry({
                 4321: { courseId: 'course_1', teacherPlayFabId: TEACHER_ID }
             }),
@@ -831,5 +868,119 @@ describe('manageTeacherCourse', () => {
         // authenticateSessionTicket swallows the parse failure and reports it
         // as an invalid session.
         expect(response.status).toBe(401);
+    });
+
+    // ── delete: guard against removing a course with students ─────────
+
+    const DELETE_BODY = {
+        sessionTicket: 'ticket-1',
+        action: 'delete',
+        courseId: 'course_1'
+    };
+
+    function deleteRoutes(studentsRoute) {
+        return [
+            authTeacher(),
+            role('teacher'),
+            teacherCourses([existingCourse()]),
+            studentsRoute,
+            courseRegistry({
+                1234: { courseId: 'course_1', teacherPlayFabId: TEACHER_ID }
+            }),
+            saveRegistryOk(),
+            saveCoursesOk()
+        ];
+    }
+
+    it('refuses to delete a course that still has active students', async () => {
+        routeFetch(deleteRoutes(assignedStudents([
+            { studentPlayFabId: 'S1', courseId: 'course_1', status: 'ACTIVE' },
+            { studentPlayFabId: 'S2', courseId: 'course_1', status: 'ACTIVE' }
+        ])));
+
+        const response = await handler(makeRequest(DELETE_BODY), makeContext());
+
+        expect(response.status).toBe(409);
+        expect(response.jsonBody.message).toBe(
+            'This course cannot be deleted because it has 2 assigned student(s). Reassign or remove them first.'
+        );
+
+        // Nothing may be written when the delete is refused.
+        expect(bodySentTo('Admin/SetTitleInternalData')).toBeNull();
+        expect(bodySentTo('Server/UpdateUserData')).toBeNull();
+    });
+
+    it('counts legacy assignments that only stored the NCR', async () => {
+        routeFetch(deleteRoutes(assignedStudents([
+            { studentPlayFabId: 'S1', ncr: '1234', status: 'ACTIVE' }
+        ])));
+
+        const response = await handler(makeRequest(DELETE_BODY), makeContext());
+
+        expect(response.status).toBe(409);
+        expect(response.jsonBody.message).toContain('1 assigned student(s)');
+    });
+
+    it('ignores students that are not active', async () => {
+        routeFetch(deleteRoutes(assignedStudents([
+            { studentPlayFabId: 'S1', courseId: 'course_1', status: 'INACTIVE' },
+            { studentPlayFabId: 'S2', courseId: 'course_1', status: 'REMOVED' }
+        ])));
+
+        const response = await handler(makeRequest(DELETE_BODY), makeContext());
+
+        expect(response.status).toBe(200);
+        expect(response.jsonBody.message).toBe('Course deleted successfully.');
+    });
+
+    it('ignores students assigned to a different course', async () => {
+        routeFetch(deleteRoutes(assignedStudents([
+            { studentPlayFabId: 'S1', courseId: 'course_other', status: 'ACTIVE' }
+        ])));
+
+        const response = await handler(makeRequest(DELETE_BODY), makeContext());
+
+        expect(response.status).toBe(200);
+    });
+
+    it('reads the legacy assignedStudents array shape', async () => {
+        routeFetch(deleteRoutes(assignedStudents(
+            [{ studentPlayFabId: 'S1', courseId: 'course_1', status: 'ACTIVE' }],
+            { key: 'assignedStudents' }
+        )));
+
+        const response = await handler(makeRequest(DELETE_BODY), makeContext());
+
+        expect(response.status).toBe(409);
+    });
+
+    it('treats a student entry without an explicit status as active', async () => {
+        routeFetch(deleteRoutes(assignedStudents([
+            { studentPlayFabId: 'S1', courseId: 'course_1' }
+        ])));
+
+        const response = await handler(makeRequest(DELETE_BODY), makeContext());
+
+        expect(response.status).toBe(409);
+    });
+
+    it('refuses to delete when the assigned student data is corrupt', async () => {
+        routeFetch(deleteRoutes(assignedStudents(null, { rawValue: '{not-json' })));
+
+        const response = await handler(makeRequest(DELETE_BODY), makeContext());
+
+        expect(response.status).toBe(500);
+        expect(response.jsonBody.message).toBe(
+            'Assigned student data is invalid. The course was not deleted.'
+        );
+        expect(bodySentTo('Admin/SetTitleInternalData')).toBeNull();
+    });
+
+    it('tolerates an unknown shape in the assigned student payload', async () => {
+        routeFetch(deleteRoutes(assignedStudents(null, { rawValue: '{"other":[]}' })));
+
+        const response = await handler(makeRequest(DELETE_BODY), makeContext());
+
+        expect(response.status).toBe(200);
     });
 });

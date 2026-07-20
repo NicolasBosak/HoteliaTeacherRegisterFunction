@@ -30,7 +30,7 @@ const VALID_BODY = {
             firstName: 'Ana',
             lastName: 'Torres',
             email: 'ana@test.com',
-            banner: 'A123456',
+            banner: 'A00123456',
             ncr: '1234'
         }
     ]
@@ -339,7 +339,7 @@ describe('bulkCreateStudents', () => {
             firstName: 'Sin',
             lastName: 'Correo',
             email: 'not-an-email',
-            banner: 'A123456',
+            banner: 'A00123456',
             ncr: '1234'
         };
 
@@ -355,7 +355,7 @@ describe('bulkCreateStudents', () => {
 
         expect(response.status).toBe(200);
         expect(body.errorCount).toBe(1);
-        expect(body.errors[0]).toContain('Invalid email.');
+        expect(body.errors[0]).toContain('Invalid email address.');
         expect(body.students).toHaveLength(0);
     });
 
@@ -395,12 +395,42 @@ describe('bulkCreateStudents', () => {
         [
             'missing banner number',
             { banner: '' },
-            'Missing banner number.'
+            'Invalid Banner ID'
         ],
         [
             'short banner number',
-            { banner: '123' },
-            'Banner/password must have at least 6 characters.'
+            { banner: 'A123' },
+            'Invalid Banner ID'
+        ],
+        [
+            'a banner without the leading A',
+            { banner: '000123456' },
+            'Invalid Banner ID'
+        ],
+        [
+            'a banner with too many digits',
+            { banner: 'A001234567' },
+            'Invalid Banner ID'
+        ],
+        [
+            'an email without a domain',
+            { email: 'ana@test' },
+            'Invalid email address.'
+        ],
+        [
+            'an email without a user part',
+            { email: '@test.com' },
+            'Invalid email address.'
+        ],
+        [
+            'an email with spaces',
+            { email: 'an a@test.com' },
+            'Invalid email address.'
+        ],
+        [
+            'a non-numeric NCR',
+            { ncr: '12a4' },
+            'Invalid NCR. NCR must contain exactly 4 numbers.'
         ]
     ])(
         'rejects a student with %s',
@@ -711,6 +741,37 @@ describe('bulkCreateStudents', () => {
         expect(body.errors[0]).toContain('complexity');
     });
 
+    it('accepts a lowercase banner by normalising it to uppercase', async () => {
+        routeHttps(https, [
+            authTeacher(),
+            teacherRole('teacher'),
+            missingStudentAccount(),
+            registerStudent('S1'),
+            studentRole('S1', 'student'),
+            ...persistenceRoutes({ playFabId: 'S1' })
+        ]);
+
+        const response = await handler(
+            makeRequest({
+                ...VALID_BODY,
+                students: [{ ...VALID_BODY.students[0], banner: 'a00123456' }]
+            }),
+            makeContext()
+        );
+
+        const body = parseBody(response);
+
+        expect(response.status).toBe(200);
+        expect(body.errorCount).toBe(0);
+        expect(body.createdAccountCount).toBe(1);
+
+        // The uppercased banner is what gets stored as the password.
+        const registerCall = https.request.mock.calls.find(call =>
+            String(call[0].path).includes('/Client/RegisterPlayFabUser')
+        );
+        expect(registerCall).toBeDefined();
+    });
+
     it('creates an account with a fallback username for very short names', async () => {
         routeHttps(https, [
             authTeacher(),
@@ -725,7 +786,7 @@ describe('bulkCreateStudents', () => {
             firstName: 'A',
             lastName: 'B',
             email: 'ab@test.com',
-            banner: 'A123456',
+            banner: 'A00123456',
             ncr: '1234'
         };
 
@@ -743,7 +804,7 @@ describe('bulkCreateStudents', () => {
 
         // Two rows without an email must both survive de-duplication and then
         // both fail validation (invalid email), proving they were not merged.
-        const noEmail = { firstName: 'A', lastName: 'B', email: '', banner: 'A123456', ncr: '1234' };
+        const noEmail = { firstName: 'A', lastName: 'B', email: '', banner: 'A00123456', ncr: '1234' };
 
         const response = await handler(
             makeRequest({ ...VALID_BODY, students: [noEmail, { ...noEmail }] }),
