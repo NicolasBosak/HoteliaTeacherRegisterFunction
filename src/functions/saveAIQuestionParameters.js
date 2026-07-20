@@ -1,65 +1,21 @@
 const { app } = require('@azure/functions');
 
-const PLAYFAB_TITLE_ID = process.env.PLAYFAB_TITLE_ID;
-const PLAYFAB_SECRET_KEY = process.env.PLAYFAB_SECRET_KEY;
+const {
+    normalizeText,
+    safeParseJson,
+    getUserDataValue,
+    playfabRequestFromEnv: playfabRequest
+} = require('../lib/playfabClient');
+
 
 const ROLE_KEY = 'Role';
 const TEACHER_COURSES_KEY = 'Hotelia_TeacherCourses';
 const AI_PARAMS_KEY = 'Hotelia_AIQuestionParameters';
 const CLASS_AI_REGISTRY_KEY = 'Hotelia_ClassAIRegistry';
 
-async function playfabRequest(path, body) {
-    if (!PLAYFAB_TITLE_ID || !PLAYFAB_SECRET_KEY) {
-        throw new Error('Missing PLAYFAB_TITLE_ID or PLAYFAB_SECRET_KEY app settings.');
-    }
 
-    const response = await fetch(`https://${PLAYFAB_TITLE_ID}.playfabapi.com/${path}`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-SecretKey': PLAYFAB_SECRET_KEY
-        },
-        body: JSON.stringify(body || {})
-    });
 
-    const text = await response.text();
 
-    let json;
-
-    try {
-        json = JSON.parse(text);
-    } catch {
-        throw new Error(`Invalid PlayFab response: ${text}`);
-    }
-
-    if (!response.ok || json.code !== 200) {
-        throw new Error(json.errorMessage || text);
-    }
-
-    return json.data;
-}
-
-function safeParseJson(value, fallback) {
-    if (!value) return fallback;
-
-    try {
-        return JSON.parse(value);
-    } catch {
-        return fallback;
-    }
-}
-
-function getUserDataValue(data, key) {
-    if (!data || !data.Data || !data.Data[key]) {
-        return '';
-    }
-
-    return data.Data[key].Value || '';
-}
-
-function normalizeText(value) {
-    return typeof value === 'string' ? value.trim() : '';
-}
 
 function findTeacherCourse(coursesData, courseId, classCode) {
     if (!coursesData || !Array.isArray(coursesData.courses)) {

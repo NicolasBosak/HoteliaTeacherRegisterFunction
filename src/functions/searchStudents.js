@@ -1,5 +1,12 @@
 const { app } = require('@azure/functions');
 
+const {
+    normalizeText,
+    getRequiredEnv,
+    playFabPost,
+    authenticateSessionTicketId: authenticateSessionTicket
+} = require('../lib/playfabClient');
+
 const STUDENT_INDEX_KEY = 'Hotelia_StudentIndex';
 const ROLE_KEY = 'Role';
 
@@ -114,36 +121,8 @@ function searchResponse(status, success, message, students) {
     };
 }
 
-function normalizeText(value) {
-    return typeof value === 'string' ? value.trim() : '';
-}
 
-function getRequiredEnv(name) {
-    const value = normalizeText(process.env[name]);
 
-    if (!value) {
-        throw new Error(`Missing environment variable: ${name}`);
-    }
-
-    return value;
-}
-
-async function authenticateSessionTicket(titleId, secretKey, sessionTicket) {
-    try {
-        const data = await playFabPost(
-            titleId,
-            'Server/AuthenticateSessionTicket',
-            { SessionTicket: sessionTicket },
-            secretKey
-        );
-
-        return data.UserInfo && data.UserInfo.PlayFabId
-            ? data.UserInfo.PlayFabId
-            : '';
-    } catch {
-        return '';
-    }
-}
 
 async function getPlayerRole(titleId, secretKey, playFabId) {
     const data = await playFabPost(
@@ -180,31 +159,3 @@ async function getInternalJson(titleId, secretKey, key, defaultValue) {
     }
 }
 
-async function playFabPost(titleId, path, body, secretKey) {
-    const response = await fetch(
-        `https://${titleId}.playfabapi.com/${path}`,
-        {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-SecretKey': secretKey
-            },
-            body: JSON.stringify(body || {})
-        }
-    );
-
-    const text = await response.text();
-    let result;
-
-    try {
-        result = text ? JSON.parse(text) : {};
-    } catch {
-        throw new Error(`Invalid PlayFab response from ${path}.`);
-    }
-
-    if (!response.ok || result.error || result.code !== 200) {
-        throw new Error(result.errorMessage || `PlayFab request failed: ${path}`);
-    }
-
-    return result.data || {};
-}

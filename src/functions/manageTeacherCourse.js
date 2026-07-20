@@ -1,11 +1,21 @@
 const { app } = require('@azure/functions');
 const { randomBytes } = require('node:crypto');
 
+const {
+    normalizeText,
+    getRequiredEnv,
+    readJsonBody,
+    playFabPost,
+    authenticateSessionTicket,
+    getPlayerRole,
+    getInternalJson,
+    setInternalJson
+} = require('../lib/playfabClient');
+
 const TEACHER_COURSES_KEY = 'Hotelia_TeacherCourses';
 const COURSE_REGISTRY_KEY = 'Hotelia_CourseRegistry';
 const SUBJECT_CATALOG_KEY = 'Hotelia_SubjectCatalog';
 
-const ROLE_KEY = 'Role';
 const TEACHER_ROLE = 'teacher';
 
 app.http('manageTeacherCourse', {
@@ -739,185 +749,11 @@ async function getCourseRegistry(
     return registry;
 }
 
-async function authenticateSessionTicket(
-    titleId,
-    secretKey,
-    sessionTicket
-) {
-    try {
-        const data = await playFabPost(
-            titleId,
-            'Server/AuthenticateSessionTicket',
-            {
-                SessionTicket: sessionTicket
-            },
-            secretKey
-        );
 
-        const userInfo =
-            data && data.UserInfo
-                ? data.UserInfo
-                : null;
 
-        const playFabId =
-            userInfo && userInfo.PlayFabId
-                ? normalizeText(
-                    userInfo.PlayFabId
-                )
-                : '';
 
-        return {
-            playFabId,
-            userInfo
-        };
-    } catch {
-        return null;
-    }
-}
 
-async function getPlayerRole(
-    titleId,
-    secretKey,
-    playFabId
-) {
-    const data = await playFabPost(
-        titleId,
-        'Server/GetUserData',
-        {
-            PlayFabId: playFabId,
-            Keys: [ROLE_KEY]
-        },
-        secretKey
-    );
 
-    if (
-        !data ||
-        !data.Data ||
-        !data.Data[ROLE_KEY]
-    ) {
-        return '';
-    }
-
-    return normalizeText(
-        data.Data[ROLE_KEY].Value
-    ).toLowerCase();
-}
-
-async function getInternalJson(
-    titleId,
-    secretKey,
-    key,
-    defaultValue
-) {
-    const data = await playFabPost(
-        titleId,
-        'Admin/GetTitleInternalData',
-        {
-            Keys: [key]
-        },
-        secretKey
-    );
-
-    if (
-        !data ||
-        !data.Data ||
-        !data.Data[key]
-    ) {
-        return defaultValue;
-    }
-
-    try {
-        return JSON.parse(
-            data.Data[key]
-        );
-    } catch {
-        return defaultValue;
-    }
-}
-
-async function setInternalJson(
-    titleId,
-    secretKey,
-    key,
-    value
-) {
-    await playFabPost(
-        titleId,
-        'Admin/SetTitleInternalData',
-        {
-            Key: key,
-            Value: JSON.stringify(value)
-        },
-        secretKey
-    );
-}
-
-async function playFabPost(
-    titleId,
-    path,
-    body,
-    secretKey
-) {
-    const response = await fetch(
-        `https://${titleId}.playfabapi.com/${path}`,
-        {
-            method: 'POST',
-
-            headers: {
-                'Content-Type':
-                    'application/json',
-
-                'X-SecretKey':
-                    secretKey
-            },
-
-            body: JSON.stringify(
-                body || {}
-            )
-        }
-    );
-
-    const text = await response.text();
-
-    let result;
-
-    try {
-        result = text
-            ? JSON.parse(text)
-            : {};
-    } catch {
-        throw new Error(
-            'Invalid PlayFab response from ' +
-            path +
-            '.'
-        );
-    }
-
-    if (
-        !response.ok ||
-        !result ||
-        result.error ||
-        result.code !== 200
-    ) {
-        const message =
-            result && result.errorMessage
-                ? result.errorMessage
-                : 'PlayFab request failed: ' +
-                path;
-
-        throw new Error(message);
-    }
-
-    return result.data || {};
-}
-
-async function readJsonBody(request) {
-    try {
-        return await request.json();
-    } catch {
-        return {};
-    }
-}
 
 function jsonResponse(status, payload) {
     return {
@@ -929,11 +765,6 @@ function jsonResponse(status, payload) {
     };
 }
 
-function normalizeText(value) {
-    return typeof value === 'string'
-        ? value.trim()
-        : '';
-}
 
 function getCourseClassCode(course) {
     return normalizeText(
@@ -954,20 +785,6 @@ function createCourseId() {
     );
 }
 
-function getRequiredEnv(name) {
-    const value = normalizeText(
-        process.env[name]
-    );
-
-    if (!value) {
-        throw new Error(
-            'Missing environment variable: ' +
-            name
-        );
-    }
-
-    return value;
-}
 
 function publicError(
     status,

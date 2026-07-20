@@ -1,5 +1,16 @@
 const { app } = require('@azure/functions');
 
+const {
+    normalizeText,
+    getRequiredEnv,
+    readJsonBody,
+    playFabPost,
+    authenticateSessionTicket,
+    getPlayerRole,
+    getInternalJson,
+    setInternalJson
+} = require('../lib/playfabClient');
+
 const STUDENT_INDEX_KEY = 'Hotelia_StudentIndex';
 const ROLE_KEY = 'Role';
 const STUDENT_ROLE = 'student';
@@ -254,13 +265,6 @@ app.http('upsertStudentProfile', {
     }
 });
 
-async function readJsonBody(request) {
-    try {
-        return await request.json();
-    } catch {
-        return {};
-    }
-}
 
 function profileResponse(
     status,
@@ -277,99 +281,16 @@ function profileResponse(
     };
 }
 
-function normalizeText(value) {
-    return typeof value === 'string'
-        ? value.trim()
-        : '';
-}
 
-function getRequiredEnv(name) {
-    const value = normalizeText(
-        process.env[name]
-    );
-
-    if (!value) {
-        throw new Error(
-            'Missing environment variable: ' +
-            name
-        );
-    }
-
-    return value;
-}
 
 /*
  * Autentica el SessionTicket y devuelve el PlayFabId real.
  */
-async function authenticateSessionTicket(
-    titleId,
-    secretKey,
-    sessionTicket
-) {
-    try {
-        const data = await playFabPost(
-            titleId,
-            'Server/AuthenticateSessionTicket',
-            {
-                SessionTicket: sessionTicket
-            },
-            secretKey
-        );
-
-        const userInfo =
-            data &&
-            data.UserInfo
-                ? data.UserInfo
-                : null;
-
-        const playFabId =
-            userInfo &&
-            userInfo.PlayFabId
-                ? normalizeText(
-                    userInfo.PlayFabId
-                )
-                : '';
-
-        return {
-            playFabId,
-            userInfo
-        };
-    } catch {
-        return null;
-    }
-}
 
 /*
  * Lee el rol del usuario.
  * Devuelve vacío cuando no existe.
  */
-async function getPlayerRole(
-    titleId,
-    secretKey,
-    playFabId
-) {
-    const data = await playFabPost(
-        titleId,
-        'Server/GetUserData',
-        {
-            PlayFabId: playFabId,
-            Keys: [ROLE_KEY]
-        },
-        secretKey
-    );
-
-    if (
-        !data ||
-        !data.Data ||
-        !data.Data[ROLE_KEY]
-    ) {
-        return '';
-    }
-
-    return normalizeText(
-        data.Data[ROLE_KEY].Value
-    ).toLowerCase();
-}
 
 /*
  * Guarda Role=student cuando la cuenta no tiene rol.
@@ -492,122 +413,3 @@ function getAccountDisplayName(
     return generatedName || 'Student';
 }
 
-/*
- * Lee datos internos del título.
- */
-async function getInternalJson(
-    titleId,
-    secretKey,
-    key,
-    defaultValue
-) {
-    const data = await playFabPost(
-        titleId,
-        'Admin/GetTitleInternalData',
-        {
-            Keys: [key]
-        },
-        secretKey
-    );
-
-    if (
-        !data ||
-        !data.Data ||
-        !data.Data[key]
-    ) {
-        return defaultValue;
-    }
-
-    try {
-        return JSON.parse(
-            data.Data[key]
-        );
-    } catch {
-        return defaultValue;
-    }
-}
-
-/*
- * Guarda datos internos del título.
- */
-async function setInternalJson(
-    titleId,
-    secretKey,
-    key,
-    value
-) {
-    await playFabPost(
-        titleId,
-        'Admin/SetTitleInternalData',
-        {
-            Key: key,
-            Value: JSON.stringify(value)
-        },
-        secretKey
-    );
-}
-
-/*
- * Función común para solicitudes a PlayFab.
- */
-async function playFabPost(
-    titleId,
-    path,
-    body,
-    secretKey
-) {
-    const response = await fetch(
-        `https://${titleId}.playfabapi.com/${path}`,
-        {
-            method: 'POST',
-
-            headers: {
-                'Content-Type':
-                    'application/json',
-
-                'X-SecretKey':
-                    secretKey
-            },
-
-            body: JSON.stringify(
-                body || {}
-            )
-        }
-    );
-
-    const text = await response.text();
-
-    let result;
-
-    try {
-        result = text
-            ? JSON.parse(text)
-            : {};
-    } catch {
-        throw new Error(
-            'Invalid PlayFab response from ' +
-            path +
-            '.'
-        );
-    }
-
-    if (
-        !response.ok ||
-        !result ||
-        result.error ||
-        result.code !== 200
-    ) {
-        const errorMessage =
-            result &&
-            result.errorMessage
-                ? result.errorMessage
-                : 'PlayFab request failed: ' +
-                  path;
-
-        throw new Error(
-            errorMessage
-        );
-    }
-
-    return result.data || {};
-}
